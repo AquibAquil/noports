@@ -2,6 +2,7 @@ import 'package:at_client/at_client.dart';
 import 'package:at_utils/at_logger.dart';
 import 'package:noports_core/npp.dart';
 import 'package:noports_core/npa.dart';
+import 'package:noports_core/src/events/noports_event_types.dart';
 import 'package:noports_core/src/version.dart' as core_version;
 
 /// Callbacks for handling policy manager RPC requests
@@ -11,6 +12,12 @@ class ManagerRpcCallbacks implements AtRpcCallbacks {
   final NppOperationHooks? nppOperationHooks;
   final String binariesVersion;
   final NPARequestHandler handler;
+  final Atsign policyAtsign;
+
+  /// Receives an event for each request that changes or tries to change the
+  /// rules, and for each refused request; reads (ping, get, simulate) send
+  /// none.
+  final Future<void> Function(Map<String, dynamic> event) onEvent;
   final AtSignLogger logger = AtSignLogger('ManagerRpcCallbacks');
 
   ManagerRpcCallbacks({
@@ -18,8 +25,21 @@ class ManagerRpcCallbacks implements AtRpcCallbacks {
     required this.nppCache,
     required this.binariesVersion,
     required this.handler,
+    required this.policyAtsign,
+    required this.onEvent,
     this.nppOperationHooks,
   });
+
+  /// Builds an event with [build] and hands it to [onEvent]. A failure in
+  /// either is logged and swallowed: the event log must never change the
+  /// answer a manager gets.
+  Future<void> _sendEvent(Map<String, dynamic> Function() build) async {
+    try {
+      await onEvent(build());
+    } catch (e) {
+      logger.warning('Failed to log policy event: $e');
+    }
+  }
 
   String _generateId(Set<PolicyEntry> entities) {
     int maxId = 0;
@@ -37,8 +57,32 @@ class ManagerRpcCallbacks implements AtRpcCallbacks {
 
   @override
   Future<AtRpcResp> handleRequest(AtRpcReq request, String fromAtSign) async {
+    try {
+      return await _handleRequest(request, fromAtSign);
+    } catch (e) {
+      // e.g. a put or delete whose value isn't the JSON its target needs
+      final Object? operation = request.payload['operation'];
+      if (operation == 'put' || operation == 'delete') {
+        await _sendEvent(() => PolicyEvent.ruleChangeFailed(
+              policyAtsign: policyAtsign,
+              fromAtsign: fromAtSign.toAtsign(),
+              operation: operation as String,
+              kind: request.payload['target']?.toString(),
+              error: '$e',
+            ));
+      }
+      rethrow;
+    }
+  }
+
+  Future<AtRpcResp> _handleRequest(AtRpcReq request, String fromAtSign) async {
     final int reqId = request.reqId;
     if (fromAtSign != atClient.getCurrentAtSign()) {
+      await _sendEvent(() => PolicyEvent.managerRequestRefused(
+            policyAtsign: policyAtsign,
+            fromAtsign: fromAtSign.toAtsign(),
+            operation: request.payload['operation']?.toString(),
+          ));
       return AtRpcResp(
           reqId: reqId,
           respType: AtRpcRespType.error,
@@ -59,6 +103,8 @@ class ManagerRpcCallbacks implements AtRpcCallbacks {
     final String? target = requestPayload['target'];
     late String message;
     late bool success;
+    Map<String, dynamic>? storedRule; // what a successful put stored
+    String? ruleId; // the id a delete names
     switch (operation) {
       case 'ping': {
         logger.info('Received ping request from $fromAtSign');
@@ -211,6 +257,7 @@ class ManagerRpcCallbacks implements AtRpcCallbacks {
             responsePayload['success'] = success;
             responsePayload['clientId'] =
                 client.id!; // client.id is non-null after ID generation
+            storedRule = client.toJson();
             message = 'Client stored successfully.';
             break;
           }
@@ -249,6 +296,7 @@ class ManagerRpcCallbacks implements AtRpcCallbacks {
             responsePayload['success'] = success;
             responsePayload['clientGroupId'] =
                 clientGroup.id!; // clientGroup.id is non-null after ID generation
+            storedRule = clientGroup.toJson();
             message = 'Client group stored successfully.';
             break;
           }
@@ -290,6 +338,7 @@ class ManagerRpcCallbacks implements AtRpcCallbacks {
             responsePayload['success'] = success;
             responsePayload['clientGroupMemberId'] =
                 clientGroupMember.id!; // clientGroupMember.id is non-null after ID generation
+            storedRule = clientGroupMember.toJson();
             message = 'Client group member stored successfully.';
             break;
           }
@@ -325,6 +374,7 @@ class ManagerRpcCallbacks implements AtRpcCallbacks {
             responsePayload['success'] = success;
             responsePayload['daemonId'] =
                 daemon.id!; // daemon.id is non-null after ID generation
+            storedRule = daemon.toJson();
             message = 'Daemon stored successfully.';
             break;
           }
@@ -361,6 +411,7 @@ class ManagerRpcCallbacks implements AtRpcCallbacks {
             responsePayload['success'] = success;
             responsePayload['serviceId'] =
                 service.id!; // service.id is non-null after ID generation
+            storedRule = service.toJson();
             message = 'Service stored successfully.';
             break;
           }
@@ -399,6 +450,7 @@ class ManagerRpcCallbacks implements AtRpcCallbacks {
             responsePayload['success'] = success;
             responsePayload['serviceACLId'] =
                 serviceACL.id!; // serviceACL.id is non-null after ID generation
+            storedRule = serviceACL.toJson();
             message = 'Service ACL stored successfully.';
             break;
           }
@@ -420,6 +472,7 @@ class ManagerRpcCallbacks implements AtRpcCallbacks {
         switch(target) {
           case 'Client': {
             final String clientId = valueAsMap['clientId'];
+            ruleId = clientId;
             success = nppCache.deleteClient(clientId);
             responsePayload['success'] = success;
             if (success) {
@@ -431,6 +484,7 @@ class ManagerRpcCallbacks implements AtRpcCallbacks {
           }
           case 'ClientGroup': {
             final String clientGroupId = valueAsMap['clientGroupId'];
+            ruleId = clientGroupId;
             success = nppCache.deleteClientGroup(clientGroupId);
             responsePayload['success'] = success;
             if (success) {
@@ -442,6 +496,7 @@ class ManagerRpcCallbacks implements AtRpcCallbacks {
           }
           case 'ClientGroupMember': {
             final String clientGroupMemberId = valueAsMap['clientGroupMemberId'];
+            ruleId = clientGroupMemberId;
             success = nppCache.deleteClientGroupMember(clientGroupMemberId);
             responsePayload['success'] = success;
             if (success) {
@@ -453,6 +508,7 @@ class ManagerRpcCallbacks implements AtRpcCallbacks {
           }
           case 'Daemon': {
             final String daemonId = valueAsMap['daemonId'];
+            ruleId = daemonId;
             success = nppCache.deleteDaemon(daemonId);
             responsePayload['success'] = success;
             if (success) {
@@ -464,6 +520,7 @@ class ManagerRpcCallbacks implements AtRpcCallbacks {
           }
           case 'Service': {
             final String serviceId = valueAsMap['serviceId'];
+            ruleId = serviceId;
             success = nppCache.deleteService(serviceId);
             responsePayload['success'] = success;
             if (success) {
@@ -475,6 +532,7 @@ class ManagerRpcCallbacks implements AtRpcCallbacks {
           }
           case 'ServiceACL': {
             final String serviceACLId = valueAsMap['serviceACLId'];
+            ruleId = serviceACLId;
             success = nppCache.deleteServiceACL(serviceACLId);
             responsePayload['success'] = success;
             if (success) {
@@ -496,6 +554,35 @@ class ManagerRpcCallbacks implements AtRpcCallbacks {
         message = 'Unknown operation: $operation';
         break;
       }
+    }
+    if (operation == 'put' || operation == 'delete') {
+      await _sendEvent(() {
+        final Atsign sender = fromAtSign.toAtsign();
+        if (!success) {
+          return PolicyEvent.ruleChangeFailed(
+            policyAtsign: policyAtsign,
+            fromAtsign: sender,
+            operation: operation,
+            kind: target,
+            error: message,
+          );
+        } else if (operation == 'put') {
+          return PolicyEvent.ruleStored(
+            policyAtsign: policyAtsign,
+            fromAtsign: sender,
+            kind: target!,
+            id: storedRule!['id'],
+            rule: storedRule,
+          );
+        } else {
+          return PolicyEvent.ruleDeleted(
+            policyAtsign: policyAtsign,
+            fromAtsign: sender,
+            kind: target!,
+            id: ruleId!,
+          );
+        }
+      });
     }
     return AtRpcResp(
       reqId: reqId,

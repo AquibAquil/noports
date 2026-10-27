@@ -533,6 +533,33 @@ void main() {
     });
 
     test(
+        'when it starts with @events as its event logging Atsign and @policy'
+        ' puts a Daemon through its manager RPC, then @events receives'
+        ' ruleStored from @policy naming the new Daemon', () async {
+      final npp = await start(eventLoggingAtSign: events);
+
+      final response = await npp.managerRpcListener.callbacks.handleRequest(
+          AtRpcReq.create({
+            'operation': 'put',
+            'target': 'Daemon',
+            'value': {'atSign': '@daemon2'},
+          }),
+          policy);
+      for (var i = 0; i < 50 && received.length < 2; i++) {
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+
+      expect(response.respType, AtRpcRespType.success);
+      final stored = received.singleWhere((e) => e['event'] == 'ruleStored');
+      expect(stored['sender'], policy);
+      expect(stored['policyAtsign'], policy);
+      expect(stored['fromAtsign'], policy);
+      expect(stored['kind'], 'Daemon');
+      expect(stored['id'], '2');
+      expect(stored['rule'], {'id': '2', 'atSign': '@daemon2'});
+    });
+
+    test(
         'when it stops, then its heartbeat stops, and stopped, with the reason'
         ' and uptime, has reached @events without waiting; stopping again'
         ' sends nothing more', () async {

@@ -103,6 +103,10 @@
 - fix: `--list-devices` lists a daemon on the client's own atSign
 - feat: npp logs rulesLoaded, heartbeat and stopped events to the event
   logging Atsign
+- **BREAKING CHANGE** feat: `ManagerRpcCallbacks` requires `policyAtsign` and
+  `onEvent`, and sends ruleStored, ruleDeleted, ruleChangeFailed and
+  managerRequestRefused events for the manager requests that change, or try
+  to change, the rules
 
 # 6.15.0
 

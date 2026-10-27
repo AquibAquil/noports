@@ -142,15 +142,21 @@ enum PolicyEventType {
   rulesLoaded, // the policy service loaded its rules and is answering checks
   heartbeat, // the policy service is still running and answering checks
   stopped, // the policy service is shutting down
+  ruleStored, // a manager request stored a rule
+  ruleDeleted, // a manager request deleted a rule
+  ruleChangeFailed, // a manager request to store or delete a rule failed
+  managerRequestRefused, // a manager request came from an Atsign not allowed to send it
 }
 
 /// The events a policy service sends to its event logging Atsign: one for
-/// each auth check it answers, and [rulesLoaded], [heartbeat] and [stopped]
+/// each auth check it answers, one for each manager request that changes or
+/// tries to change its rules, and [rulesLoaded], [heartbeat] and [stopped]
 /// for its own lifecycle. Every event carries `event` (a [PolicyEventType]
 /// name), `timestamp` (UTC) and `policyAtsign`. Each auth check event also
 /// carries `fromAtsign` (the Atsign that sent the check) and the request's
 /// `clientAtsign`, `daemonAtsign`, `daemonDeviceName` and
-/// `daemonDeviceGroupName`.
+/// `daemonDeviceGroupName`. Each manager request event also carries
+/// `fromAtsign` (the Atsign that sent the request).
 abstract class PolicyEvent {
   /// The policy check authorised the client, with the answer's `message` and
   /// `permitOpen`.
@@ -264,6 +270,89 @@ abstract class PolicyEvent {
     "policyAtsign": policyAtsign,
     "reason": reason,
     "uptime": uptime.inSeconds,
+  };
+
+  /// A manager request stored `rule`, a rule of kind `kind` (e.g. `Client`)
+  /// with id `id`, adding it or replacing the one with that id.
+  static Map<String, dynamic> ruleStored({
+    required Atsign policyAtsign,
+    required Atsign fromAtsign,
+    required String kind,
+    required String id,
+    required Map<String, dynamic> rule,
+  }) => {
+    ..._managerRequestFields(
+      PolicyEventType.ruleStored,
+      policyAtsign,
+      fromAtsign,
+    ),
+    "kind": kind,
+    "id": id,
+    "rule": rule,
+  };
+
+  /// A manager request deleted the rule of kind `kind` with id `id`.
+  static Map<String, dynamic> ruleDeleted({
+    required Atsign policyAtsign,
+    required Atsign fromAtsign,
+    required String kind,
+    required String id,
+  }) => {
+    ..._managerRequestFields(
+      PolicyEventType.ruleDeleted,
+      policyAtsign,
+      fromAtsign,
+    ),
+    "kind": kind,
+    "id": id,
+  };
+
+  /// A manager request to `put` or `delete` a rule of kind `kind` failed, so
+  /// the rules are unchanged; `error` says why. `kind` is null when the
+  /// request named none.
+  static Map<String, dynamic> ruleChangeFailed({
+    required Atsign policyAtsign,
+    required Atsign fromAtsign,
+    required String operation,
+    required String? kind,
+    required String error,
+  }) => {
+    ..._managerRequestFields(
+      PolicyEventType.ruleChangeFailed,
+      policyAtsign,
+      fromAtsign,
+    ),
+    "operation": operation,
+    "kind": kind,
+    "error": error,
+  };
+
+  /// A manager request came from an Atsign that may not send one, so it was
+  /// refused without being acted on. `operation` is what it asked for, or null
+  /// when it named none.
+  static Map<String, dynamic> managerRequestRefused({
+    required Atsign policyAtsign,
+    required Atsign fromAtsign,
+    required String? operation,
+  }) => {
+    ..._managerRequestFields(
+      PolicyEventType.managerRequestRefused,
+      policyAtsign,
+      fromAtsign,
+    ),
+    "operation": operation,
+  };
+
+  /// The fields every manager request event carries.
+  static Map<String, dynamic> _managerRequestFields(
+    PolicyEventType event,
+    Atsign policyAtsign,
+    Atsign fromAtsign,
+  ) => {
+    "event": event.name,
+    "timestamp": DateTime.now().toUtc().toIso8601String(),
+    "policyAtsign": policyAtsign,
+    "fromAtsign": fromAtsign,
   };
 
   /// The fields every policy check event carries.
